@@ -33,25 +33,26 @@ Record keys: `id, n name, la, lo, a address, p phone, w website, c category, t t
 
 ## v0.4.0 – whole United States
 - **Coverage:** all 50 states, DC and Puerto Rico (areas `CONUS`, `AK`, `HI`, `PR` in the builder). Not included: Aleutian islands west of the 180th meridian, Guam, USVI and other territories. Outside the US the app shows OpenStreetMap results only.
-- **Size (Overture 2026-09-23.1):** 3,289 tiles, 1,446,972 places, 114 MB total (3,314 hosted files incl. 25 sub-tile files). Typical tile 10-100 KB; biggest 1.46 MB (a dense tile in Los Angeles). The app downloads only the tile(s) around the search, so a normal first search in a new area is roughly 0.05-1.5 MB.
+- **Size (Overture 2026-09-23.1):** 3,289 tiles, 1,446,972 places, 114 MB total (~100 MB in 21 pack files plus 150 loose PA/OH files). Typical tile 10-100 KB; biggest 1.46 MB (a dense tile in Los Angeles). The app downloads only the tile(s) around the search, so a normal first search in a new area is roughly 0.05-1.5 MB.
 - **Country filter:** records whose address says a country other than US/PR (Canada/Mexico slivers in border tiles) are dropped.
 - **Dense tiles:** tiles are 0.5 degree. If a tile is over 1.5 MB gzipped it is split into 2x2 (or 4x4) sub-tiles `t_<x>_<y>_<i>_<j>.json.gz`; the manifest lists which exist and the app fetches only the sub-tiles that touch the search circle.
-- **Manifest schema 2:** `tiles["x_y"] = [count, bytes, release, sub, subs?]`. `release` is the GitHub release hosting that tile. The app maps tile -> URL `https://github.com/sicpoe-wq/nearby-eats/releases/download/<release>/<file>`. Schema-1 entries (`[count, bytes]`) still parse (they mean release `data`, no split). The app refetches the manifest right away if its cached copy is older than schema 2, and clears cached tiles whenever the Overture release/build date changes.
-- **Hosting (GitHub limit: 1000 assets per release):** tiles are sharded by 5-degree longitude band into releases `data-b<n>` (n = floor(lon/5), e.g. `data-b-17` = -85..-80). Tiles that v0.3.0 already used (the PA + OH boxes) stay in release `data` next to `manifest.json`, so v0.3.0 keeps working for PA/OH. The biggest shard has ~440 files. The publisher refuses to continue if a release would exceed 950 files.
+- **Manifest schema 3:** `tiles["x_y"] = [count, bytes, shard, sub, subs, offs]`. Tiles of the v0.3.0 area (PA + OH, shard `data`) stay individual files in release `data`. Every other tile lives inside one of ~20 archives `pack-b<n>.bin` (n = floor(lon/5), one per 5-degree longitude band, 3-16 MB each, all in release `data`); `offs` is the `[offset, length]` of the tile (or of each sub-tile) inside the archive. The app reads one tile with an HTTP `Range` request (GitHub's asset CDN supports it; if a server ignores Range the app slices the full response) and caches it as its own file. Schema-1/2 entries still parse. The app refetches the manifest right away if its cached copy is older than schema 3, and clears cached tiles whenever the Overture release/build date changes.
+- **Why packs (hosting design):** a release holds at most 1000 assets, and GitHub throttles asset uploads (we were blocked after ~2,400 uploads in a few minutes, for over an hour). ~3,300 loose files could not be refreshed reliably every month; ~170 files can. v0.3.0 keeps working because `manifest.json` still lists PA/OH tiles as individual files in `data`.
 - Parsing of tiles happens off the UI thread.
 
 Rebuild / extend coverage:
 ```
 python3 -m venv .venv && .venv/bin/pip install pyarrow
-.venv/bin/python tool/build_overture_tiles.py --region US --out build/tiles        # ~15 min, ~2 GB RAM, ~115 MB output
-python3 tool/publish_tiles.py            # uploads to releases data / data-b*, skips unchanged files, prunes stale ones (needs gh auth)
+.venv/bin/python tool/build_overture_tiles.py --region US --out build/tiles        # ~6 min, ~2 GB RAM, ~115 MB output
+python3 tool/pack_tiles.py build/tiles   # bundle tiles into pack-b*.bin archives (manifest schema 3)
+python3 tool/publish_tiles.py            # uploads to release data, skips unchanged files, prunes stale ones (needs gh auth)
 sh tool/verify_hosted_data.sh            # manifest totals + every file returns HTTP 200 (SAMPLE=300 to sample)
 ```
 `--region` accepts `US`, a group (`US-WEST`, `US-CENTRAL`, `US-EAST`, `US-OTHER`), state codes (see `STATES` in the script) or `--bbox W S E N` (repeatable).
 **Beyond the US:** add a box to `AREAS` (e.g. `'CA': (-141, 41.6, -52, 70)`), add its country code to `US_COUNTRIES` (rename to taste), run the builder and publish. Everything else (tile ids, shards by longitude, app loader) is worldwide already. Publishing replaces the whole tile set listed in the manifest, so always build the *full* intended coverage, not just the new part.
 The script defaults to the latest Overture release; pass `--release 2026-09-23.1` to pin one.
 
-**Monthly refresh:** `.github/workflows/refresh-data.yml` runs on the 5th (and by hand under Actions -> Run workflow). It resolves the latest Overture release, builds four parallel jobs (US-WEST, US-CENTRAL, US-EAST, US-OTHER), merges their manifests and publishes. Each build job takes about 5-15 minutes (limit set to 5 h); nothing in it is paid.
+**Monthly refresh:** `.github/workflows/refresh-data.yml` runs on the 5th (and by hand under Actions -> Run workflow). It resolves the latest Overture release, builds four parallel jobs (US-WEST, US-CENTRAL, US-EAST, US-OTHER), merges their manifests, packs and publishes. A whole-US build takes about 6 minutes on one machine, so each of the four jobs is only a few minutes; the publish job uploads ~170 files (loose PA/OH tiles that did not change are skipped by sha256). Nothing in it is paid.
 
 Live check: `VERIFY_HOSTED=1 flutter test test/hosted_data_test.dart` loads real hosted tiles for ZIP 16159 (Pizzas By Marchelloni exactly once within 1 mile) and for Chicago, a small Texas town, Honolulu, Anchorage, Miami, Los Angeles, NYC and Boise.
 

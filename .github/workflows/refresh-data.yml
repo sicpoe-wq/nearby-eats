@@ -1,6 +1,6 @@
 name: Refresh Overture data tiles
 # Rebuilds the whole-US tile set from the latest Overture release and publishes
-# it to the rolling releases "data" and "data-b*". The build is split into four
+# it to the rolling releases "data" . The build is split into four
 # parallel jobs (west / central / east / AK+HI+PR); each takes well under an
 # hour, the publish job a few minutes more.
 on:
@@ -57,7 +57,9 @@ jobs:
           merge-multiple: true
       - name: Merge manifests
         run: python3 tool/merge_manifests.py build/tiles
-      - name: Publish to releases data / data-b*
+      - name: Pack tiles
+        run: python3 tool/pack_tiles.py build/tiles
+      - name: Publish to release data
         env:
           GH_TOKEN: ${{ github.token }}
         run: python3 tool/publish_tiles.py "${{ github.repository }}" --dir build/tiles
