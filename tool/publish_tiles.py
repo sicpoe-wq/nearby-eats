@@ -86,7 +86,9 @@ for rel, files in sorted(want.items()):
 for rel in json.loads(gh('release', 'list', '--json', 'tagName', '--limit', '100').stdout):
     if rel['tagName'].startswith('data-b'):
         print('deleting obsolete release', rel['tagName'])
-        gh('release', 'delete', rel['tagName'], '--cleanup-tag', '-y')
+        r = gh('release', 'delete', rel['tagName'], '--cleanup-tag', '-y', check=False)
+        if r.returncode:
+            print('  could not delete (harmless, retry later):', r.stderr.strip()[:100])
 # manifest last
 mp = os.path.join(dirn, 'manifest.json')
 have = sync('data', {'manifest.json': mp})
