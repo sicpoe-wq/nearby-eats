@@ -57,7 +57,8 @@ class Place {
     required this.amenity,
     required this.tags,
     this.distanceM = 0,
-  });
+    Set<String>? sources,
+  }) : sources = sources ?? {'osm'};
 
   final String id; // e.g. node/123
   final String name;
@@ -66,6 +67,26 @@ class Place {
   final String amenity;
   final Map<String, String> tags;
   double distanceM;
+
+  /// Where this place's data came from: 'osm' and/or 'overture'.
+  final Set<String> sources;
+
+  bool get hasOsm => sources.contains('osm');
+  bool get hasOverture => sources.contains('overture');
+
+  /// Full data-source name for the detail page.
+  String get sourceLabel => hasOsm && hasOverture
+      ? 'OpenStreetMap + Overture Maps'
+      : hasOverture
+          ? 'Overture Maps'
+          : 'OpenStreetMap';
+
+  /// Short badge text for list rows.
+  String get sourceBadge => hasOsm && hasOverture
+      ? 'OSM + Overture'
+      : hasOverture
+          ? 'Overture'
+          : 'OSM';
 
   PlaceType get type => typeFromAmenity(amenity);
 
@@ -124,6 +145,7 @@ class Place {
         'lon': lon,
         'amenity': amenity,
         'tags': tags,
+        'sources': sources.toList(),
       };
 
   factory Place.fromJson(Map<String, dynamic> j) => Place(
@@ -133,6 +155,7 @@ class Place {
         lon: (j['lon'] as num).toDouble(),
         amenity: j['amenity'] as String? ?? '',
         tags: Map<String, String>.from(j['tags'] as Map),
+        sources: (j['sources'] as List?)?.map((e) => '$e').toSet(),
       );
 
   /// Parses an Overpass `elements` entry. Returns null if unusable

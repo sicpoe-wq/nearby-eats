@@ -6,6 +6,8 @@ import 'geocode_service.dart';
 import 'menu_scanner.dart';
 import 'menu_status_store.dart';
 import 'overpass_service.dart';
+import 'overture_service.dart';
+import 'place_merge.dart';
 import 'settings_store.dart';
 
 enum LoadStatus { idle, locating, loading, ready, error }
@@ -34,15 +36,18 @@ class AppState extends ChangeNotifier {
       {OverpassService? overpass,
       GeocodeService? geocoder,
       SettingsStore? store,
+      OvertureService? overture,
       MenuStatusStore? menuStore,
       MenuScanner? scanner})
       : _menuStore = menuStore ?? MenuStatusStore(),
         _scanner = scanner ?? MenuScanner(),
         overpassService = overpass ?? OverpassService(),
+        overtureService = overture ?? OvertureService(),
         geocoder = geocoder ?? GeocodeService(),
         _store = store ?? SettingsStore();
 
   final OverpassService overpassService;
+  final OvertureService overtureService;
   final GeocodeService geocoder;
   final SettingsStore _store;
   final MenuStatusStore _menuStore;
@@ -79,6 +84,9 @@ class AppState extends ChangeNotifier {
   bool hasMenuOnly = false, hasWebsiteOnly = false;
 
   int radiusM = 2000;
+  bool overtureEnabled = true;
+  List<Place> _osm = []; // latest OpenStreetMap list for the current spot
+  List<Place> _ovt = []; // Overture list for the current spot
   DistUnit unit = DistUnit.mi;
   double? lat, lon;
   String locationLabel = '';
@@ -100,6 +108,7 @@ class AppState extends ChangeNotifier {
     final s = await _store.load();
     radiusM = s.radiusM;
     unit = s.unit;
+    overtureEnabled = await _store.loadOverture();
     favorites = await _store.loadFavorites();
     checks = await _menuStore.load();
     notifyListeners();
@@ -111,6 +120,13 @@ class AppState extends ChangeNotifier {
     unit = u;
     await _store.save(r, u);
     notifyListeners();
+  }
+
+  Future<void> setOvertureEnabled(bool v) async {
+    overtureEnabled = v;
+    await _store.saveOverture(v);
+    notifyListeners();
+    if (lat != null) await refresh();
   }
 
   Future<void> setRadius(int r) async {
@@ -309,6 +325,14 @@ class AppState extends ChangeNotifier {
   static const _freshMinutes = 10;
   static const _maxResults = 300;
 
+  /// Show OSM results merged with Overture (if on) for the current spot.
+  void _showMerged() {
+    final merged = overtureEnabled && _ovt.isNotEmpty
+        ? mergePlaces(_osm, _ovt)
+        : _osm;
+    _setPlaces(merged);
+  }
+
   void _setPlaces(List<Place> p) {
     all = p.length > _maxResults ? p.sublist(0, _maxResults) : p;
     if (cuisine != null && !cuisineOptions.contains(cuisine)) cuisine = null;
@@ -325,16 +349,38 @@ class AppState extends ChangeNotifier {
     error = null;
     notifyListeners();
     bool stale() => gen != _loadGen;
+    _osm = [];
+    _ovt = [];
+    // Overture runs in parallel with OpenStreetMap; it never throws, and a
+    // failure just means OSM-only results.
+    Future<void> ovtFuture = Future.value();
+    if (overtureEnabled) {
+      ovtFuture = () async {
+        try {
+          final r2 = await overtureService.load(la, lo, r);
+          if (stale()) return;
+          _ovt = r2;
+          if (r2.isNotEmpty) {
+            _showMerged();
+            status = LoadStatus.ready;
+            notifyListeners();
+          }
+        } catch (_) {}
+      }();
+    }
     try {
       // 1) Saved results for this spot: show instantly.
       final c = await overpassService.cached(la, lo, r);
       if (stale()) return;
       if (c != null) {
-        _setPlaces(c.places);
+        _osm = c.places;
+        _showMerged();
         showingCache = true;
         cachedAt = c.savedAt;
         status = LoadStatus.ready;
         if (!force && c.age.inMinutes < _freshMinutes) {
+          await ovtFuture;
+          if (stale()) return;
           _finding = false;
           notifyListeners();
           unawaited(_runMenuChecks());
@@ -348,7 +394,8 @@ class AppState extends ChangeNotifier {
           final quick = await overpassService.fetchLive(la, lo, 1000, limit: 120);
           if (stale()) return;
           if (quick.isNotEmpty) {
-            _setPlaces(quick);
+            _osm = quick;
+            _showMerged();
             showingCache = false;
             cachedAt = null;
             status = LoadStatus.ready;
@@ -360,16 +407,21 @@ class AppState extends ChangeNotifier {
       try {
         final live = await overpassService.fetchLive(la, lo, r);
         if (stale()) return;
-        _setPlaces(live);
+        _osm = live;
+        _showMerged();
         showingCache = false;
         cachedAt = null;
         status = LoadStatus.ready;
       } catch (e) {
         if (stale()) return;
+        await ovtFuture;
+        if (stale()) return;
         if (all.isEmpty) rethrow;
         showingCache = cachedAt != null; // keep what we already show
         status = LoadStatus.ready;
       }
+      await ovtFuture;
+      if (stale()) return;
       _finding = false;
       notifyListeners();
       unawaited(_runMenuChecks());

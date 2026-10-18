@@ -4,7 +4,7 @@ import 'package:http/http.dart' as http;
 import '../models/place.dart';
 import 'cache_store.dart';
 
-const userAgent = 'NearbyEats/0.2 (Android app; github.com/sicpoe-wq/nearby-eats)';
+const userAgent = 'NearbyEats/0.3 (Android app; github.com/sicpoe-wq/nearby-eats)';
 
 class OverpassService {
   OverpassService(

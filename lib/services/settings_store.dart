@@ -29,6 +29,12 @@ class SettingsStore {
     await p.setString('unit', unit.name);
   }
 
+  Future<bool> loadOverture() async =>
+      (await SharedPreferences.getInstance()).getBool('overture') ?? true;
+
+  Future<void> saveOverture(bool v) async =>
+      (await SharedPreferences.getInstance()).setBool('overture', v);
+
   Future<List<Place>> loadFavorites() async {
     final p = await SharedPreferences.getInstance();
     final raw = p.getString('favorites');

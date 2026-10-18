@@ -44,7 +44,19 @@ class PlaceTile extends StatelessWidget {
                   if (favorite) Icon(Icons.favorite, size: 16, color: cs.primary),
                   StatusIcons(place: place, state: state, size: 20),
                 ]),
-                Text(sub, style: tt.bodySmall?.copyWith(color: cs.onSurfaceVariant)),
+                Row(children: [
+                  Flexible(child: Text(sub, style: tt.bodySmall?.copyWith(color: cs.onSurfaceVariant), maxLines: 1, overflow: TextOverflow.ellipsis)),
+                  const SizedBox(width: 6),
+                  Container(
+                    padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 1),
+                    decoration: BoxDecoration(
+                        color: cs.surfaceContainerHighest,
+                        borderRadius: BorderRadius.circular(6)),
+                    child: Text(place.sourceBadge,
+                        key: const Key('source-badge'),
+                        style: tt.labelSmall?.copyWith(color: cs.onSurfaceVariant)),
+                  ),
+                ]),
                 if (place.address != null) Text(place.address!, style: tt.bodySmall, maxLines: 1, overflow: TextOverflow.ellipsis),
                 if (place.openingHours != null)
                   Row(children: [

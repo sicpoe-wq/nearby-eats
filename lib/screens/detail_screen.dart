@@ -142,11 +142,22 @@ class _DetailScreenState extends State<DetailScreen> {
                 if (p.phone != null) ListTile(leading: const Icon(Icons.phone_outlined), title: Text(p.phone!)),
                 if (p.website != null) ListTile(leading: const Icon(Icons.language), title: Text(p.website!, maxLines: 1, overflow: TextOverflow.ellipsis)),
                 if (p.address == null && p.openingHours == null && p.phone == null && p.website == null)
-                  const ListTile(leading: Icon(Icons.info_outline), title: Text('OpenStreetMap has no extra details for this place.')),
+                  ListTile(leading: const Icon(Icons.info_outline), title: Text('${p.sourceLabel} has no extra details for this place.')),
               ]),
             ),
             const SizedBox(height: 16),
-            Text('Data © OpenStreetMap contributors · ${p.id}', style: tt.bodySmall?.copyWith(color: cs.outline)),
+            ListTile(
+              contentPadding: EdgeInsets.zero,
+              leading: const Icon(Icons.storage_outlined),
+              title: Text('Data source: ${p.sourceLabel}', key: const Key('source-label')),
+              subtitle: Text(
+                  [
+                    if (p.hasOsm) '© OpenStreetMap contributors',
+                    if (p.hasOverture) 'Overture Maps Foundation',
+                  ].join(' · '),
+                  style: tt.bodySmall?.copyWith(color: cs.outline)),
+            ),
+            Text(p.id, style: tt.bodySmall?.copyWith(color: cs.outline)),
           ]),
         );
       },

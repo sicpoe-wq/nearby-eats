@@ -1,0 +1,29 @@
+name: Refresh Overture data tiles
+on:
+  schedule:
+    - cron: '0 6 5 * *'   # monthly, on the 5th (Overture publishes about monthly)
+  workflow_dispatch:
+    inputs:
+      regions:
+        description: 'State codes, space separated (default: tool/regions.txt)'
+        required: false
+permissions:
+  contents: write
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: { python-version: '3.12' }
+      - run: pip install pyarrow
+      - name: Build tiles
+        run: |
+          REGIONS="${{ github.event.inputs.regions }}"
+          [ -n "$REGIONS" ] || REGIONS="$(cat tool/regions.txt)"
+          python tool/build_overture_tiles.py --release latest --region $REGIONS --out build/tiles
+      - name: Publish to release "data"
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: sh tool/publish_tiles.sh "${{ github.repository }}"
