@@ -1,4 +1,10 @@
+import 'dart:convert';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:http/http.dart' as http;
+import 'package:http/testing.dart';
+import 'package:shared_preferences/shared_preferences.dart';
+import 'package:nearby_eats/services/app_state.dart';
+import 'package:nearby_eats/services/menu_status_store.dart';
 import 'package:nearby_eats/models/place.dart';
 import 'package:nearby_eats/services/geocode_service.dart';
 import 'package:nearby_eats/services/menu_scanner.dart';
@@ -99,6 +105,104 @@ void main() {
     });
     test('nothing found', () {
       expect(MenuScanner.parseHtml('<a href="/x">Contact</a>', base).isEmpty, isTrue);
+    });
+  });
+
+  group('menu/website status', () {
+    Place mk(Map<String, String> tags) => Place(
+        id: 'node/1', name: 'X', lat: 0, lon: 0, amenity: 'restaurant', tags: tags);
+    MenuCheck chk(List<MenuLink> l, {bool ok = true, DateTime? at}) =>
+        MenuCheck(ok: ok, scan: MenuScanResult(l, []), at: at);
+
+    test('OSM menu tag => found immediately', () {
+      final m = menuInfoFor(mk({'menu:url': 'https://a.com/m'}), null);
+      expect(m.state, MenuState.found);
+      expect(m.url, 'https://a.com/m');
+    });
+    test('no website, no tag => none (no pending forever)', () {
+      expect(menuInfoFor(mk({}), null).state, MenuState.none);
+    });
+    test('website unchecked => pending', () {
+      expect(menuInfoFor(mk({'website': 'a.com'}), null).state, MenuState.pending);
+    });
+    test('scan result decides found / none', () {
+      final p = mk({'website': 'a.com'});
+      final f = menuInfoFor(p, chk([MenuLink('https://a.com/menu', 'Menu')]));
+      expect(f.state, MenuState.found);
+      expect(f.url, 'https://a.com/menu');
+      expect(menuInfoFor(p, chk([])).state, MenuState.none);
+    });
+    test('check json roundtrip and freshness', () {
+      final c = chk([MenuLink('https://a.com/menu', 'Menu', fromSchema: true)]);
+      final r = MenuCheck.fromJson(jsonDecode(jsonEncode(c.toJson())));
+      expect(r.menuUrl, 'https://a.com/menu');
+      expect(r.scan.links.first.fromSchema, isTrue);
+      expect(c.isFresh(), isTrue);
+      expect(chk([], at: DateTime.now().subtract(const Duration(days: 15))).isFresh(), isFalse);
+      expect(chk([], ok: false, at: DateTime.now().subtract(const Duration(days: 2))).isFresh(), isFalse);
+      expect(chk([], ok: false, at: DateTime.now().subtract(const Duration(hours: 2))).isFresh(), isTrue);
+    });
+  });
+
+  group('overpass hedging', () {
+    const okBody = '{"elements":[{"type":"node","id":1,"lat":1,"lon":1,"tags":{"name":"A","amenity":"cafe"}}]}';
+    setUp(() => SharedPreferences.setMockInitialValues({}));
+
+    test('failing first mirror falls through immediately', () async {
+      final calls = <String>[];
+      final svc = OverpassService(
+        client: MockClient((req) async {
+          calls.add(req.url.host);
+          return req.url.host == OverpassService.endpoints[0].split('/')[2]
+              ? http.Response('err', 502)
+              : http.Response(okBody, 200);
+        }),
+        hedgeDelay: const Duration(seconds: 30),
+      );
+      final sw = Stopwatch()..start();
+      final p = await svc.fetchLive(1, 1, 1000);
+      expect(p.single.name, 'A');
+      expect(sw.elapsedMilliseconds, lessThan(2000));
+      expect(calls.length, 2);
+    });
+
+    test('slow first mirror is beaten by hedged second', () async {
+      final svc = OverpassService(
+        client: MockClient((req) async {
+          if (req.url.host == OverpassService.endpoints[0].split('/')[2]) {
+            await Future.delayed(const Duration(seconds: 3));
+          }
+          return http.Response(okBody, 200);
+        }),
+        hedgeDelay: const Duration(milliseconds: 100),
+      );
+      final sw = Stopwatch()..start();
+      await svc.fetchLive(1, 1, 1000);
+      expect(sw.elapsedMilliseconds, lessThan(1500));
+    });
+
+    test('all failing throws; stale cache used by fetch()', () async {
+      final svc = OverpassService(
+        client: MockClient((req) async => http.Response('x', 500)),
+        hedgeDelay: const Duration(milliseconds: 10),
+      );
+      expect(svc.fetchLive(1, 1, 1000), throwsException);
+      expect(svc.fetch(1, 1, 1000), throwsException);
+    });
+
+    test('compact query', () {
+      final q = OverpassService.buildQuery(1, 2, 1000, limit: 120);
+      expect(q, contains('out center tags qt 120;'));
+      expect(q, contains('[timeout:15]'));
+    });
+  });
+
+  group('app state progress', () {
+    test('progress is determinate only while checking menus', () {
+      final s = AppState();
+      expect(s.busy, isFalse);
+      expect(s.progress, isNull);
+      expect(s.stageLabel, '');
     });
   });
 }

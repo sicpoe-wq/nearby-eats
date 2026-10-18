@@ -1,6 +1,8 @@
 import 'package:flutter/material.dart';
 import '../models/place.dart';
+import '../services/app_state.dart';
 import '../services/settings_store.dart';
+import 'status_icons.dart';
 
 IconData typeIcon(PlaceType t) => switch (t) {
       PlaceType.restaurant => Icons.restaurant,
@@ -11,8 +13,9 @@ IconData typeIcon(PlaceType t) => switch (t) {
     };
 
 class PlaceTile extends StatelessWidget {
-  const PlaceTile({super.key, required this.place, required this.unit, required this.onTap, this.favorite = false});
+  const PlaceTile({super.key, required this.place, required this.state, required this.unit, required this.onTap, this.favorite = false});
   final Place place;
+  final AppState state;
   final DistUnit unit;
   final VoidCallback onTap;
   final bool favorite;
@@ -39,6 +42,7 @@ class PlaceTile extends StatelessWidget {
                 Row(children: [
                   Expanded(child: Text(place.name, style: tt.titleMedium?.copyWith(fontWeight: FontWeight.w600), maxLines: 1, overflow: TextOverflow.ellipsis)),
                   if (favorite) Icon(Icons.favorite, size: 16, color: cs.primary),
+                  StatusIcons(place: place, state: state, size: 20),
                 ]),
                 Text(sub, style: tt.bodySmall?.copyWith(color: cs.onSurfaceVariant)),
                 if (place.address != null) Text(place.address!, style: tt.bodySmall, maxLines: 1, overflow: TextOverflow.ellipsis),

@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import '../services/app_state.dart';
 import '../services/settings_store.dart';
+import '../widgets/status_icons.dart';
 
 class SettingsScreen extends StatelessWidget {
   const SettingsScreen({super.key, required this.state});
@@ -38,7 +39,10 @@ class SettingsScreen extends StatelessWidget {
                   },
                 ),
             ]),
-            const SizedBox(height: 32),
+            const SizedBox(height: 24),
+            Text('Menu & website icons', style: Theme.of(context).textTheme.titleMedium),
+            const IconLegend(),
+            const SizedBox(height: 16),
             const Divider(),
             const ListTile(
               leading: Icon(Icons.info_outline),

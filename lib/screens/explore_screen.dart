@@ -9,6 +9,7 @@ import '../services/app_state.dart';
 import '../services/geocode_service.dart';
 import '../services/settings_store.dart';
 import '../widgets/place_tile.dart';
+import '../widgets/status_icons.dart';
 import 'detail_screen.dart';
 
 class ExploreScreen extends StatefulWidget {
@@ -97,6 +98,7 @@ class _ExploreScreenState extends State<ExploreScreen> {
               ],
             ),
             body: Column(children: [
+              LoadProgressBar(state: s),
               Padding(
                 padding: const EdgeInsets.fromLTRB(12, 4, 12, 4),
                 child: TextField(
@@ -182,6 +184,24 @@ class _ExploreScreenState extends State<ExploreScreen> {
               },
             ),
           ),
+        Padding(
+          padding: const EdgeInsets.symmetric(horizontal: 3, vertical: 6),
+          child: FilterChip(
+            avatar: const Icon(Icons.restaurant_menu, size: 16),
+            label: const Text('Has menu'),
+            selected: s.hasMenuOnly,
+            onSelected: s.setHasMenuOnly,
+          ),
+        ),
+        Padding(
+          padding: const EdgeInsets.symmetric(horizontal: 3, vertical: 6),
+          child: FilterChip(
+            avatar: const Icon(Icons.language, size: 16),
+            label: const Text('Has website'),
+            selected: s.hasWebsiteOnly,
+            onSelected: s.setHasWebsiteOnly,
+          ),
+        ),
         Padding(
           padding: const EdgeInsets.symmetric(horizontal: 3, vertical: 6),
           child: ActionChip(
@@ -281,8 +301,8 @@ class _ExploreScreenState extends State<ExploreScreen> {
         padding: const EdgeInsets.only(bottom: 12),
         itemCount: list.length + 1,
         itemBuilder: (c, i) => i == 0
-            ? Padding(padding: const EdgeInsets.fromLTRB(18, 4, 18, 2), child: Text('${list.length} places near ${s.locationLabel} · nearest first', style: Theme.of(context).textTheme.bodySmall))
-            : PlaceTile(place: list[i - 1], unit: s.unit, favorite: s.isFavorite(list[i - 1]), onTap: () => _open(list[i - 1])),
+            ? Padding(padding: const EdgeInsets.fromLTRB(18, 4, 18, 2), child: Row(children: [Expanded(child: Text('${list.length} places near ${s.locationLabel} · nearest first', style: Theme.of(context).textTheme.bodySmall)), InkResponse(onTap: () => showIconLegend(context), child: const Padding(padding: EdgeInsets.all(4), child: Icon(Icons.help_outline, size: 18)))]))
+            : PlaceTile(place: list[i - 1], state: s, unit: s.unit, favorite: s.isFavorite(list[i - 1]), onTap: () => _open(list[i - 1])),
       ),
     );
   }
@@ -310,7 +330,7 @@ class _ExploreScreenState extends State<ExploreScreen> {
               child: GestureDetector(
                 onTap: () => _open(p),
                 child: Container(
-                  decoration: BoxDecoration(color: Theme.of(context).colorScheme.primary, shape: BoxShape.circle, border: Border.all(color: Colors.white, width: 2)),
+                  decoration: BoxDecoration(color: Theme.of(context).colorScheme.primary, shape: BoxShape.circle, border: Border.all(color: s.menuInfo(p).state == MenuState.found ? menuActive : Colors.white, width: 3)),
                   child: Icon(typeIcon(p.type), size: 20, color: Colors.white),
                 ),
               ),

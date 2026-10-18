@@ -27,7 +27,18 @@ class GeocodeService {
     ];
   }
 
+  final Map<String, List<GeoResult>> _memo = {};
+
   Future<List<GeoResult>> search(String query, {int limit = 5}) async {
+    final k = query.trim().toLowerCase();
+    final hit = _memo[k];
+    if (hit != null) return hit;
+    final r = await _search(query, limit: limit);
+    if (r.isNotEmpty) _memo[k] = r;
+    return r;
+  }
+
+  Future<List<GeoResult>> _search(String query, {int limit = 5}) async {
     final wait = const Duration(milliseconds: 1100) -
         DateTime.now().difference(_last);
     if (wait > Duration.zero) await Future.delayed(wait);
@@ -41,7 +52,7 @@ class GeocodeService {
     final res = await _client.get(uri, headers: {
       'User-Agent': userAgent,
       'Accept-Language': 'en',
-    }).timeout(const Duration(seconds: 15));
+    }).timeout(const Duration(seconds: 10));
     if (res.statusCode != 200) {
       throw Exception('Geocoder error ${res.statusCode}');
     }

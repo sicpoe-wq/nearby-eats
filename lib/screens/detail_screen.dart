@@ -3,6 +3,7 @@ import 'package:url_launcher/url_launcher.dart';
 import '../models/place.dart';
 import '../services/app_state.dart';
 import '../services/menu_scanner.dart';
+import '../widgets/status_icons.dart';
 import '../services/settings_store.dart';
 import '../widgets/place_tile.dart';
 
@@ -33,19 +34,24 @@ class _DetailScreenState extends State<DetailScreen> {
   void initState() {
     super.initState();
     final site = p.website ?? p.menuUrl;
-    if (site != null) _scan(site);
+    final c = widget.state.checks[p.id];
+    if (c != null && c.isFresh()) {
+      scan = c.scan;
+      if (!c.ok) scanError = 'Couldn\'t read the restaurant website.';
+    } else if (site != null) {
+      _scan();
+    }
   }
 
-  Future<void> _scan(String url) async {
+  Future<void> _scan() async {
     setState(() => scanning = true);
-    try {
-      final r = await MenuScanner().scan(url);
-      if (mounted) setState(() => scan = r);
-    } catch (e) {
-      if (mounted) setState(() => scanError = 'Couldn\'t read the restaurant website.');
-    } finally {
-      if (mounted) setState(() => scanning = false);
-    }
+    final c = await widget.state.ensureCheck(p, timeout: const Duration(seconds: 8));
+    if (!mounted) return;
+    setState(() {
+      scan = c.scan;
+      if (!c.ok) scanError = 'Couldn\'t read the restaurant website.';
+      scanning = false;
+    });
   }
 
   Future<void> _open(Uri u) async {
@@ -100,6 +106,16 @@ class _DetailScreenState extends State<DetailScreen> {
                 Text(p.name, style: tt.titleLarge?.copyWith(fontWeight: FontWeight.w700)),
                 Text([p.type.label, if (p.cuisineLabel != null) p.cuisineLabel!].join(' · ')),
                 Text('${formatDistance(p.distanceM, widget.state.unit)} away', style: TextStyle(color: cs.primary, fontWeight: FontWeight.w600)),
+                Row(children: [
+                  StatusIcons(place: p, state: widget.state, size: 24),
+                  Expanded(child: Text(
+                    switch (widget.state.menuInfo(p).state) {
+                      MenuState.found => 'Menu found',
+                      MenuState.pending => 'Checking menu…',
+                      MenuState.none => 'No menu found',
+                    } + (p.website != null ? ' · Website' : ' · No website'),
+                    style: tt.bodySmall)),
+                ]),
               ])),
             ]),
             const SizedBox(height: 16),

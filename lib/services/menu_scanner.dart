@@ -13,6 +13,21 @@ class MenuScanResult {
   MenuScanResult(this.links, this.schemaItems);
   final List<MenuLink> links;
 
+  Map<String, dynamic> toJson() => {
+        'links': [
+          for (final l in links)
+            {'u': l.url, 'l': l.label, 's': l.fromSchema}
+        ],
+        'items': schemaItems,
+      };
+
+  factory MenuScanResult.fromJson(Map<String, dynamic> j) => MenuScanResult([
+        for (final l in (j['links'] as List? ?? []))
+          MenuLink('${l['u']}', '${l['l']}', fromSchema: l['s'] == true)
+      ], [
+        for (final i in (j['items'] as List? ?? [])) '$i'
+      ]);
+
   /// Section/item names published by the restaurant itself in schema.org JSON-LD.
   final List<String> schemaItems;
   bool get isEmpty => links.isEmpty && schemaItems.isEmpty;
@@ -22,16 +37,30 @@ class MenuScanner {
   MenuScanner({http.Client? client}) : _client = client ?? http.Client();
   final http.Client _client;
 
-  Future<MenuScanResult> scan(String websiteUrl) async {
-    final res = await _client.get(Uri.parse(websiteUrl), headers: {
-      'User-Agent': userAgent,
-      'Accept': 'text/html,application/xhtml+xml',
-    }).timeout(const Duration(seconds: 8));
+  /// Fetches the page (first ~600 KB only) and looks for menu links.
+  /// Short default timeout: this runs in bulk in the background.
+  Future<MenuScanResult> scan(String websiteUrl,
+      {Duration timeout = const Duration(seconds: 6)}) async {
+    final uri = Uri.parse(websiteUrl);
+    return _fetch(uri, websiteUrl).timeout(timeout);
+  }
+
+  Future<MenuScanResult> _fetch(Uri uri, String websiteUrl) async {
+    final req = http.Request('GET', uri)
+      ..headers.addAll({
+        'User-Agent': userAgent,
+        'Accept': 'text/html,application/xhtml+xml',
+      });
+    final res = await _client.send(req);
     if (res.statusCode != 200) {
       throw Exception('Website returned ${res.statusCode}');
     }
-    var body = utf8.decode(res.bodyBytes, allowMalformed: true);
-    if (body.length > 1500000) body = body.substring(0, 1500000);
+    final bytes = <int>[];
+    await for (final chunk in res.stream) {
+      bytes.addAll(chunk);
+      if (bytes.length > 600000) break;
+    }
+    final body = utf8.decode(bytes, allowMalformed: true);
     return parseHtml(body, res.request?.url ?? Uri.parse(websiteUrl));
   }
 

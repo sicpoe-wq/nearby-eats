@@ -20,6 +20,7 @@ class FavoritesScreen extends StatelessWidget {
                   for (final p in state.favorites)
                     PlaceTile(
                       place: p,
+                      state: state,
                       unit: state.unit,
                       favorite: true,
                       onTap: () => Navigator.push(context, MaterialPageRoute(builder: (_) => DetailScreen(state: state, place: p))),
