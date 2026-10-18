@@ -39,6 +39,50 @@ void main() {
       final wide = tilesFor(41.25, -80.5, 30000).map(tileKey).toSet();
       expect(wide.length, greaterThan(4));
     });
+    test('tiles for far-apart US regions', () {
+      String k(double la, double lo) => tilesFor(la, lo, 50).map(tileKey).single;
+      expect(k(34.0522, -118.2437), '-237_68'); // Los Angeles
+      expect(k(40.7128, -74.0060), '-149_81'); // NYC
+      expect(k(25.7617, -80.1918), '-161_51'); // Miami
+      expect(k(61.2181, -149.9003), '-300_122'); // Anchorage
+      expect(k(21.3069, -157.8583), '-316_42'); // Honolulu
+      expect(k(41.8781, -87.6298), '-176_83'); // Chicago
+      expect(k(18.4655, -66.1057), '-133_36'); // San Juan PR
+    });
+    test('manifest entries: schema 1, schema 2, split', () {
+      final a = TileRef.parse([5, 100])!;
+      expect((a.shard, a.sub), ('data', 1));
+      final b = TileRef.parse([5, 100, 'data-b-9', 1])!;
+      expect((b.shard, b.sub), ('data-b-9', 1));
+      final c = TileRef.parse([9, 9, 'data-b-9', 2, ['0_0', '1_1']])!;
+      expect(c.sub, 2);
+      expect(c.subs, {'0_0', '1_1'});
+      expect(TileRef.parse('junk'), isNull);
+      expect(TileRef.parse([1]), isNull);
+    });
+    test('split tile: only sub-files touching the circle are requested', () {
+      final ref = TileRef.parse([9, 9, 'data-b-9', 2, ['0_0', '0_1', '1_0', '1_1']])!;
+      // Chicago loop, tile -176_83 (lon -88..-87.5, lat 41.5..42): sub 1_0 = east/south half.
+      final one = filesFor((x: -176, y: 83), ref, 41.60, -87.60, 500);
+      expect(one.map((f) => f.name), ['t_-176_83_1_0.json.gz']);
+      final all = filesFor((x: -176, y: 83), ref, 41.75, -87.75, 20000);
+      expect(all.length, 4);
+      // Missing sub-file in the manifest is never requested.
+      final sparse = TileRef.parse([1, 1, 'data-b-9', 2, ['1_0']])!;
+      expect(filesFor((x: -176, y: 83), sparse, 41.75, -87.75, 20000).map((f) => f.name),
+          ['t_-176_83_1_0.json.gz']);
+    });
+    test('schema 3 packed entries: ranges for whole and split tiles', () {
+      final a = TileRef.parse([3, 90, 'pack-b-17', 1, [], [1000, 90]])!;
+      expect(a.packed, isTrue);
+      final f = filesFor((x: -176, y: 83), a, 41.6, -87.6, 500).single;
+      expect((f.name, f.pack, f.release, f.range), ('t_-176_83.json.gz', 'pack-b-17.bin', 'data', (1000, 90)));
+      final b = TileRef.parse([9, 9, 'pack-b-17', 2, ['0_0', '1_0'], [[0, 10], [10, 20]]])!;
+      final g = filesFor((x: -176, y: 83), b, 41.6, -87.6, 20000);
+      expect(g.map((f) => f.range), [(0, 10), (10, 20)]);
+      // packed entry without a usable range is never requested
+      expect(filesFor((x: -176, y: 83), TileRef.parse([3, 90, 'pack-b-17', 1])!, 41.6, -87.6, 500), isEmpty);
+    });
     test('negative coords floor correctly', () {
       final t = tilesFor(40.0, -80.0, 10, tileDeg: 0.5).map(tileKey).toList();
       expect(t, contains('-160_80'));
@@ -155,7 +199,8 @@ void main() {
     tearDown(() => dir.delete(recursive: true));
 
     Map<String, dynamic> manifest(String rel, List<String> tiles) =>
-        {'overture_release': rel, 'built': '2026-10-18', 'tiles': {for (final t in tiles) t: [1, 1]}};
+        {'schema': 3, 'overture_release': rel, 'built': '2026-10-18',
+          'tiles': {for (final t in tiles) t: [1, 1, 'data', 1]}};
 
     test('downloads, caches tile; second load needs no network', () async {
       var tileHits = 0;
@@ -172,6 +217,63 @@ void main() {
       expect(tileHits, 1);
       final s2 = OvertureService(client: MockClient((_) async => http.Response('x', 500)), cacheDir: dir);
       expect((await s2.load(homeLat, homeLon, 1609)).length, 1); // from disk
+    });
+    test('tile in another release and split tile are fetched from the manifest URLs', () async {
+      final urls = <String>[];
+      final tile = gz([rec('c', 'Deep Dish', 41.60, -87.60)]);
+      final m = {'schema': 2, 'overture_release': 'r1', 'built': 'b', 'tiles': {
+        '-176_83': [1, 1, 'data-b-9', 2, ['1_0']]}};
+      final s = OvertureService(
+          client: MockClient((req) async {
+            urls.add(req.url.toString());
+            if (req.url.path.endsWith('manifest.json')) return http.Response(jsonEncode(m), 200);
+            return http.Response.bytes(tile, 200);
+          }),
+          cacheDir: dir);
+      final r = await s.load(41.60, -87.60, 500);
+      expect(r.single.name, 'Deep Dish');
+      expect(urls, [
+        '$overtureDataBase/data/manifest.json',
+        '$overtureDataBase/data-b-9/t_-176_83_1_0.json.gz',
+      ]);
+    });
+    test('packed tile is read with an HTTP Range request from the pack in release data', () async {
+      final tile = gz([rec('p', 'Packed Pizza', 41.60, -87.60)]);
+      final pad = List<int>.filled(7, 0);
+      final pack = [...pad, ...tile, ...pad];
+      final m = {'schema': 3, 'overture_release': 'r1', 'built': 'b', 'tiles': {
+        '-176_83': [1, tile.length, 'pack-b-18', 1, [], [7, tile.length]]}};
+      final seen = <String>[];
+      final s = OvertureService(
+          client: MockClient((req) async {
+            if (req.url.path.endsWith('manifest.json')) return http.Response(jsonEncode(m), 200);
+            seen.add('${req.url} ${req.headers['Range']}');
+            return http.Response.bytes(pack.sublist(7, 7 + tile.length), 206);
+          }),
+          cacheDir: dir);
+      expect((await s.load(41.60, -87.60, 500)).single.name, 'Packed Pizza');
+      expect(seen, ['$overtureDataBase/data/pack-b-18.bin bytes=7-${6 + tile.length}']);
+      // cached afterwards; a server that ignores Range (200 + whole pack) also works
+      final d2 = await Directory.systemTemp.createTemp('ovt3');
+      final s2 = OvertureService(
+          client: MockClient((req) async => req.url.path.endsWith('manifest.json')
+              ? http.Response(jsonEncode(m), 200)
+              : http.Response.bytes(pack, 200)),
+          cacheDir: d2);
+      expect((await s2.load(41.60, -87.60, 500)).single.name, 'Packed Pizza');
+      d2.deleteSync(recursive: true);
+    });
+    test('cached schema-1 manifest is refetched even when not due', () async {
+      SharedPreferences.setMockInitialValues({'overture_checked': DateTime.now().millisecondsSinceEpoch});
+      File('${dir.path}/manifest.json').writeAsStringSync(jsonEncode({'overture_release': 'r0', 'built': 'old', 'tiles': {}}));
+      File('${dir.path}/t_-161_82.json.gz').writeAsBytesSync(gz([rec('old', 'Stale', 41.17, -80.45)]));
+      final tile = gz([rec('m', 'Fresh', 41.1728, -80.4569)]);
+      final s = OvertureService(
+          client: MockClient((req) async => req.url.path.endsWith('manifest.json')
+              ? http.Response(jsonEncode(manifest('r1', ['-161_82'])), 200)
+              : http.Response.bytes(tile, 200)),
+          cacheDir: dir);
+      expect((await s.load(homeLat, homeLon, 500)).single.name, 'Fresh');
     });
     test('tile not in manifest is skipped without a request', () async {
       var tileHits = 0;

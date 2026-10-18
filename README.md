@@ -28,22 +28,32 @@ OpenStreetMap misses many small-town places (e.g. Pizzas By Marchelloni, West Mi
 - Overture has no menu URL field; menus still come from each place's website.
 
 ### Overture data pipeline (free, no accounts)
-`tool/build_overture_tiles.py` reads the public Overture `places` theme from S3 anonymously, keeps food-and-drink places (taxonomy `food_and_drink`) with confidence >= 0.5 that are not closed (and drops BrightQuery-only rows with no phone/website, which are business-registry junk), and writes one gzip-JSON file per 0.5 degree tile (`t_<floor(lon*2)>_<floor(lat*2)>.json.gz`) plus `manifest.json`.
-Record keys: `id, n name, la, lo, a address, p phone, w website, c category, t type, q confidence, s sources`.
+`tool/build_overture_tiles.py` reads the public Overture `places` theme from S3 anonymously, keeps food-and-drink places (taxonomy `food_and_drink`) with confidence >= 0.5 that are not closed (and drops BrightQuery-only rows with no phone/website, which are business-registry junk), and writes gzip-JSON tiles plus `manifest.json`.
+Record keys: `id, n name, la, lo, a address, p phone, w website, c category, t type, q confidence` (null fields are omitted).
 
-Hosting: GitHub release **`data`** (rolling, not marked latest): `https://github.com/sicpoe-wq/nearby-eats/releases/download/data/<file>`. The app downloads only the tiles covering the search radius, caches them on the phone, and checks `manifest.json` about every 30 days; a new data version clears the cached tiles. Current coverage: bounding boxes of Pennsylvania and Ohio (~152 tiles, 12 MB total, typically 50-300 KB per tile; the biggest city tile is under 1 MB).
+## v0.4.0 – whole United States
+- **Coverage:** all 50 states, DC and Puerto Rico (areas `CONUS`, `AK`, `HI`, `PR` in the builder). Not included: Aleutian islands west of the 180th meridian, Guam, USVI and other territories. Outside the US the app shows OpenStreetMap results only.
+- **Size (Overture 2026-09-23.1):** 3,289 tiles, 1,446,972 places, 114 MB total (3,314 hosted files incl. 25 sub-tile files). Typical tile 10-100 KB; biggest 1.46 MB (a dense tile in Los Angeles). The app downloads only the tile(s) around the search, so a normal first search in a new area is roughly 0.05-1.5 MB.
+- **Country filter:** records whose address says a country other than US/PR (Canada/Mexico slivers in border tiles) are dropped.
+- **Dense tiles:** tiles are 0.5 degree. If a tile is over 1.5 MB gzipped it is split into 2x2 (or 4x4) sub-tiles `t_<x>_<y>_<i>_<j>.json.gz`; the manifest lists which exist and the app fetches only the sub-tiles that touch the search circle.
+- **Manifest schema 2:** `tiles["x_y"] = [count, bytes, release, sub, subs?]`. `release` is the GitHub release hosting that tile. The app maps tile -> URL `https://github.com/sicpoe-wq/nearby-eats/releases/download/<release>/<file>`. Schema-1 entries (`[count, bytes]`) still parse (they mean release `data`, no split). The app refetches the manifest right away if its cached copy is older than schema 2, and clears cached tiles whenever the Overture release/build date changes.
+- **Hosting (GitHub limit: 1000 assets per release):** tiles are sharded by 5-degree longitude band into releases `data-b<n>` (n = floor(lon/5), e.g. `data-b-17` = -85..-80). Tiles that v0.3.0 already used (the PA + OH boxes) stay in release `data` next to `manifest.json`, so v0.3.0 keeps working for PA/OH. The biggest shard has ~440 files. The publisher refuses to continue if a release would exceed 950 files.
+- Parsing of tiles happens off the UI thread.
 
 Rebuild / extend coverage:
 ```
 python3 -m venv .venv && .venv/bin/pip install pyarrow
-.venv/bin/python tool/build_overture_tiles.py --region PA OH NY --out build/tiles   # add state codes (see STATES in the script) or --bbox W S E N
-sh tool/publish_tiles.sh            # uploads to release "data" and prunes stale tiles (needs gh auth)
-sh tool/verify_hosted_data.sh       # every tile in the manifest returns HTTP 200
+.venv/bin/python tool/build_overture_tiles.py --region US --out build/tiles        # ~15 min, ~2 GB RAM, ~115 MB output
+python3 tool/publish_tiles.py            # uploads to releases data / data-b*, skips unchanged files, prunes stale ones (needs gh auth)
+sh tool/verify_hosted_data.sh            # manifest totals + every file returns HTTP 200 (SAMPLE=300 to sample)
 ```
-Edit `tool/regions.txt` to change the monthly default. The GitHub Action `.github/workflows/refresh-data.yml` rebuilds and publishes monthly (5th) and can be run by hand with a custom region list (Actions -> Refresh Overture data tiles -> Run workflow).
+`--region` accepts `US`, a group (`US-WEST`, `US-CENTRAL`, `US-EAST`, `US-OTHER`), state codes (see `STATES` in the script) or `--bbox W S E N` (repeatable).
+**Beyond the US:** add a box to `AREAS` (e.g. `'CA': (-141, 41.6, -52, 70)`), add its country code to `US_COUNTRIES` (rename to taste), run the builder and publish. Everything else (tile ids, shards by longitude, app loader) is worldwide already. Publishing replaces the whole tile set listed in the manifest, so always build the *full* intended coverage, not just the new part.
 The script defaults to the latest Overture release; pass `--release 2026-09-23.1` to pin one.
 
-Live check: `VERIFY_HOSTED=1 flutter test test/hosted_data_test.dart` loads the real tile for ZIP 16159 and asserts Pizzas By Marchelloni is returned within 1 mile exactly once.
+**Monthly refresh:** `.github/workflows/refresh-data.yml` runs on the 5th (and by hand under Actions -> Run workflow). It resolves the latest Overture release, builds four parallel jobs (US-WEST, US-CENTRAL, US-EAST, US-OTHER), merges their manifests and publishes. Each build job takes about 5-15 minutes (limit set to 5 h); nothing in it is paid.
+
+Live check: `VERIFY_HOSTED=1 flutter test test/hosted_data_test.dart` loads real hosted tiles for ZIP 16159 (Pizzas By Marchelloni exactly once within 1 mile) and for Chicago, a small Texas town, Honolulu, Anchorage, Miami, Los Angeles, NYC and Boise.
 
 ## Data, licenses and attribution
 - Restaurants: (c) OpenStreetMap contributors, ODbL, via the Overpass API. Geocoding: Nominatim.

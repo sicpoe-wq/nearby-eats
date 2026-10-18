@@ -2,21 +2,105 @@ import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 import 'dart:math';
+import 'package:flutter/foundation.dart' show compute;
 import 'package:http/http.dart' as http;
 import 'package:path_provider/path_provider.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import '../models/place.dart';
 
+/// Root of the GitHub release downloads. The manifest lives in release "data";
+/// each tile's release ("data", "data-b-9", ...) comes from the manifest.
 const overtureDataBase =
-    'https://github.com/sicpoe-wq/nearby-eats/releases/download/data';
+    'https://github.com/sicpoe-wq/nearby-eats/releases/download';
+const overtureManifestRelease = 'data';
+/// Cached manifests older than this schema are refetched immediately.
+const overtureMinSchema = 3;
 const overtureTileDeg = 0.5;
-const _ua = 'NearbyEats/0.3 (Android app; github.com/sicpoe-wq/nearby-eats)';
+const _ua = 'NearbyEats/0.4 (Android app; github.com/sicpoe-wq/nearby-eats)';
 
 /// Grid tile id: x = floor(lon*2), y = floor(lat*2).
 typedef TileId = ({int x, int y});
 
 String tileKey(TileId t) => '${t.x}_${t.y}';
 String tileFile(TileId t) => 't_${t.x}_${t.y}.json.gz';
+
+/// One manifest entry: where a tile is hosted and whether it is split.
+/// Schema 1: [count, bytes]. Schema 2: [count, bytes, release, sub, subs?].
+/// Schema 3 adds a 6th item for packed tiles (shard "pack-bN"): the byte
+/// range inside `SHARD.bin` ([offset, length], or one per sub-tile).
+class TileRef {
+  TileRef(this.count, this.bytes, this.shard, this.sub, this.subs, this.ranges);
+  final int count, bytes, sub;
+  final String shard;
+  final Set<String> subs; // "i_j" files that exist when sub > 1
+  /// Byte ranges in the pack, keyed by sub-tile "i_j" ('' for an unsplit tile).
+  final Map<String, (int, int)> ranges;
+
+  bool get packed => shard.startsWith('pack-');
+
+  static TileRef? parse(Object? v) {
+    if (v is! List || v.length < 2) return null;
+    final sub = v.length > 3 && v[3] is int ? v[3] as int : 1;
+    final subList = v.length > 4 && v[4] is List ? [for (final e in v[4] as List) '$e'] : <String>[];
+    final shard = v.length > 2 && v[2] is String ? v[2] as String : overtureManifestRelease;
+    final ranges = <String, (int, int)>{};
+    final offs = v.length > 5 ? v[5] : null;
+    if (offs is List && offs.isNotEmpty) {
+      (int, int)? pair(Object? o) => o is List && o.length == 2 && o[0] is num && o[1] is num
+          ? ((o[0] as num).toInt(), (o[1] as num).toInt())
+          : null;
+      if (sub <= 1) {
+        final r = pair(offs);
+        if (r != null) ranges[''] = r;
+      } else {
+        for (var k = 0; k < subList.length && k < offs.length; k++) {
+          final r = pair(offs[k]);
+          if (r != null) ranges[subList[k]] = r;
+        }
+      }
+    }
+    return TileRef((v[0] as num?)?.toInt() ?? 0, (v[1] as num?)?.toInt() ?? 0, shard,
+        sub < 1 ? 1 : sub, subList.toSet(), ranges);
+  }
+}
+
+/// One file to fetch: [name] is the local cache name; it lives in release
+/// [release] (individual file) or at [range] of `RELEASE/PACK.bin`.
+class TileFile {
+  TileFile(this.name, this.release, {this.pack, this.range});
+  final String name, release;
+  final String? pack;
+  final (int, int)? range;
+}
+
+/// Files to fetch for [t] given its manifest entry, restricted to
+/// sub-tiles that touch the circle around the point when the tile is split.
+List<TileFile> filesFor(TileId t, TileRef ref, double lat, double lon, int radiusM,
+    {double tileDeg = overtureTileDeg}) {
+  TileFile mk(String name, String sub) => ref.packed
+      ? TileFile(name, overtureManifestRelease, pack: '${ref.shard}.bin', range: ref.ranges[sub])
+      : TileFile(name, ref.shard);
+  if (ref.sub <= 1) {
+    final f = mk(tileFile(t), '');
+    return ref.packed && f.range == null ? [] : [f];
+  }
+  final dLat = radiusM / 111320.0;
+  final dLon = radiusM / (111320.0 * max(0.05, cos(lat * pi / 180)));
+  final step = tileDeg / ref.sub;
+  final out = <TileFile>[];
+  for (var i = 0; i < ref.sub; i++) {
+    for (var j = 0; j < ref.sub; j++) {
+      if (!ref.subs.contains('${i}_$j')) continue;
+      final w = t.x * tileDeg + i * step, s0 = t.y * tileDeg + j * step;
+      if (w > lon + dLon || w + step < lon - dLon) continue;
+      if (s0 > lat + dLat || s0 + step < lat - dLat) continue;
+      final f = mk('t_${t.x}_${t.y}_${i}_$j.json.gz', '${i}_$j');
+      if (ref.packed && f.range == null) continue;
+      out.add(f);
+    }
+  }
+  return out;
+}
 
 /// Tiles that cover a circle of [radiusM] around the point.
 List<TileId> tilesFor(double lat, double lon, int radiusM,
@@ -83,6 +167,14 @@ Place? placeFromOverture(Map<String, dynamic> r, double originLat, double origin
   );
 }
 
+List<Place> _parseJob(List<Object> a) => parseOvertureTile(
+    a[0] as List<int>, a[1] as double, a[2] as double, a[3] as int);
+
+/// Parses off the UI isolate; dense city tiles hold up to ~20k records.
+Future<List<Place>> parseOvertureTileAsync(
+        List<int> gz, double lat, double lon, int radiusM) =>
+    compute(_parseJob, <Object>[gz, lat, lon, radiusM]);
+
 List<Place> parseOvertureTile(
     List<int> gzBytes, double originLat, double originLon, int radiusM) {
   final raw = utf8.decode(gzip.decode(gzBytes));
@@ -123,9 +215,21 @@ class OvertureService {
     return d;
   }
 
-  Future<List<int>?> _get(String file) async {
-    final res = await _client
-        .get(Uri.parse('$baseUrl/$file'), headers: {'User-Agent': _ua}).timeout(timeout);
+  Future<List<int>?> _get(String file,
+      {String release = overtureManifestRelease, (int, int)? range}) async {
+    final res = await _client.get(Uri.parse('$baseUrl/$release/$file'), headers: {
+      'User-Agent': _ua,
+      if (range != null) 'Range': 'bytes=${range.$1}-${range.$1 + range.$2 - 1}',
+    }).timeout(timeout);
+    if (range != null && (res.statusCode == 200 || res.statusCode == 206)) {
+      var b = res.bodyBytes;
+      // A server that ignores Range sends the whole pack: slice it ourselves.
+      if (res.statusCode == 200 && b.length >= range.$1 + range.$2) {
+        b = b.sublist(range.$1, range.$1 + range.$2);
+      }
+      if (b.length != range.$2) throw HttpException('short range read for $file');
+      return b;
+    }
     if (res.statusCode == 200) return res.bodyBytes;
     if (res.statusCode == 404) return null;
     throw HttpException('HTTP ${res.statusCode} for $file');
@@ -146,7 +250,9 @@ class OvertureService {
         local = jsonDecode(await f.readAsString()) as Map<String, dynamic>;
       } catch (_) {}
     }
-    final due = local == null ||
+    final oldSchema = local != null &&
+        ((local['schema'] as num?)?.toInt() ?? 1) < overtureMinSchema;
+    final due = local == null || oldSchema ||
         DateTime.now().millisecondsSinceEpoch - last > checkEvery.inMilliseconds;
     if (due) {
       try {
@@ -155,7 +261,8 @@ class OvertureService {
           final fresh = jsonDecode(utf8.decode(b)) as Map<String, dynamic>;
           final changed = local != null &&
               (local['overture_release'] != fresh['overture_release'] ||
-                  local['built'] != fresh['built']);
+                  local['built'] != fresh['built'] ||
+                  local['schema'] != fresh['schema']);
           if (changed) {
             for (final e in dir.listSync()) {
               if (e is File && e.path.endsWith('.json.gz')) e.deleteSync();
@@ -173,33 +280,54 @@ class OvertureService {
     return _manifest = local;
   }
 
-  /// Bytes of one tile: disk cache first, then network. Null if the tile
-  /// does not exist (no food places there) or cannot be fetched.
-  Future<List<int>?> tileBytes(TileId t) async {
+  /// Bytes of one tile file: disk cache first, then the release named in
+  /// the manifest. Null if it does not exist or cannot be fetched.
+  Future<List<int>?> fileBytes(TileFile t) async {
     final dir = await _dir();
-    final m = await manifest(); // also drops stale tiles after a data update
-    final f = File('${dir.path}/${tileFile(t)}');
+    final f = File('${dir.path}/${t.name}');
     if (await f.exists()) return f.readAsBytes();
-    final tiles = m?['tiles'];
-    if (tiles is Map && !tiles.containsKey(tileKey(t))) return null;
-    final b = await _get(tileFile(t));
+    final b = t.pack != null
+        ? await _get(t.pack!, release: t.release, range: t.range)
+        : await _get(t.name, release: t.release);
     if (b != null) await f.writeAsBytes(b, flush: true);
     return b;
+  }
+
+  /// Tile files (name, release) needed for a search; empty if the manifest
+  /// says there is nothing there.
+  Future<List<TileFile>> filesForSearch(double lat, double lon, int radiusM) async {
+    final m = await manifest(); // also drops stale tiles after a data update
+    final tiles = m?['tiles'];
+    if (tiles is! Map) return [];
+    final out = <TileFile>[];
+    for (final t in tilesFor(lat, lon, radiusM)) {
+      final ref = TileRef.parse(tiles[tileKey(t)]);
+      if (ref == null) continue;
+      out.addAll(filesFor(t, ref, lat, lon, radiusM));
+    }
+    return out;
   }
 
   /// Overture places within [radiusM] of the point.
   Future<List<Place>> load(double lat, double lon, int radiusM) async {
     lastProblem = null;
     final out = <Place>[];
+    List<TileFile> files;
+    try {
+      files = await filesForSearch(lat, lon, radiusM);
+    } catch (e) {
+      lastProblem = 'manifest: $e';
+      return out;
+    }
     final results = await Future.wait([
-      for (final t in tilesFor(lat, lon, radiusM))
+      for (final fr in files)
         () async {
           try {
-            final b = await tileBytes(t);
+            final b = await fileBytes(fr);
             if (b == null) return <Place>[];
-            return parseOvertureTile(b, lat, lon, radiusM);
+            return await parseOvertureTileAsync(b, lat, lon, radiusM);
           } catch (e) {
-            lastProblem = 'tile ${tileKey(t)}: $e';
+            lastProblem = 'tile ${fr.name}: $e';
             return <Place>[];
           }
         }()

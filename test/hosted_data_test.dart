@@ -42,4 +42,29 @@ void main() {
     print('merged=${merged.length}; subway sources=${merged.firstWhere((p) => p.name == 'Subway').sources}');
     await dir.delete(recursive: true);
   }, skip: on ? false : 'set VERIFY_HOSTED=1');
+
+  test('hosted tiles return restaurants across the whole US', () async {
+    HttpOverrides.global = null;
+    final dir = await Directory.systemTemp.createTemp('ovt_live_us');
+    final s = OvertureService(cacheDir: dir);
+    const spots = {
+      'downtown Chicago': (41.8837, -87.6325, 1609, 100),
+      'Fredericksburg TX': (30.2752, -98.8720, 3000, 20),
+      'Honolulu': (21.3069, -157.8583, 1609, 100),
+      'Anchorage': (61.2181, -149.9003, 1609, 30),
+      'Miami': (25.7617, -80.1918, 1609, 100),
+      'Los Angeles': (34.0522, -118.2437, 1609, 100),
+      'NYC Times Square': (40.7580, -73.9855, 1000, 100),
+      'Boise ID': (43.6150, -116.2023, 1609, 30),
+    };
+    for (final e in spots.entries) {
+      final (la, lo, r, min) = e.value;
+      final sw = Stopwatch()..start();
+      final places = await s.load(la, lo, r);
+      // ignore: avoid_print
+      print('${e.key}: ${places.length} places in ${r}m, ${sw.elapsedMilliseconds} ms, problem=${s.lastProblem}');
+      expect(places.length, greaterThanOrEqualTo(min), reason: e.key);
+    }
+    await dir.delete(recursive: true);
+  }, skip: on ? false : 'set VERIFY_HOSTED=1', timeout: const Timeout(Duration(minutes: 5)));
 }

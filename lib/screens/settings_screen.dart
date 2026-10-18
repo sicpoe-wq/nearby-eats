@@ -45,7 +45,9 @@ class SettingsScreen extends StatelessWidget {
               title: const Text('Include Overture Maps places'),
               subtitle: const Text(
                   'Adds places OpenStreetMap is missing (for example small-town pizza shops). '
-                  'Downloads small regional data files the first time you search an area, then keeps them on your phone.'),
+                  'Covers the whole United States (all 50 states, DC and Puerto Rico). '
+                  'Downloads small data files for the area the first time you search it, '
+                  'then keeps them on your phone. Outside the US only OpenStreetMap results are shown.'),
               value: state.overtureEnabled,
               onChanged: state.setOvertureEnabled,
             ),

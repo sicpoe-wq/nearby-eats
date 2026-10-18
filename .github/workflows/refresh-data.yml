@@ -1,29 +1,63 @@
 name: Refresh Overture data tiles
+# Rebuilds the whole-US tile set from the latest Overture release and publishes
+# it to the rolling releases "data" and "data-b*". The build is split into four
+# parallel jobs (west / central / east / AK+HI+PR); each takes well under an
+# hour, the publish job a few minutes more.
 on:
   schedule:
     - cron: '0 6 5 * *'   # monthly, on the 5th (Overture publishes about monthly)
-  workflow_dispatch:
-    inputs:
-      regions:
-        description: 'State codes, space separated (default: tool/regions.txt)'
-        required: false
+  workflow_dispatch: {}
 permissions:
   contents: write
 jobs:
-  build:
+  release:
     runs-on: ubuntu-latest
-    timeout-minutes: 120
+    outputs:
+      overture: ${{ steps.r.outputs.overture }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with: { python-version: '3.12' }
       - run: pip install pyarrow
-      - name: Build tiles
+      - id: r
+        run: echo "overture=$(python tool/build_overture_tiles.py --print-release)" >> "$GITHUB_OUTPUT"
+  build:
+    needs: release
+    runs-on: ubuntu-latest
+    timeout-minutes: 300
+    strategy:
+      fail-fast: true
+      matrix:
+        group: [US-WEST, US-CENTRAL, US-EAST, US-OTHER]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: { python-version: '3.12' }
+      - run: pip install pyarrow
+      - name: Build tiles (${{ matrix.group }})
         run: |
-          REGIONS="${{ github.event.inputs.regions }}"
-          [ -n "$REGIONS" ] || REGIONS="$(cat tool/regions.txt)"
-          python tool/build_overture_tiles.py --release latest --region $REGIONS --out build/tiles
-      - name: Publish to release "data"
+          python tool/build_overture_tiles.py --release "${{ needs.release.outputs.overture }}" \
+            --region ${{ matrix.group }} --out build/tiles --manifest-name manifest.part-${{ matrix.group }}.json
+      - uses: actions/upload-artifact@v4
+        with:
+          name: tiles-${{ matrix.group }}
+          path: build/tiles
+          retention-days: 1
+          compression-level: 0
+  publish:
+    needs: build
+    runs-on: ubuntu-latest
+    timeout-minutes: 300
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: tiles-*
+          path: build/tiles
+          merge-multiple: true
+      - name: Merge manifests
+        run: python3 tool/merge_manifests.py build/tiles
+      - name: Publish to releases data / data-b*
         env:
           GH_TOKEN: ${{ github.token }}
-        run: sh tool/publish_tiles.sh "${{ github.repository }}"
+        run: python3 tool/publish_tiles.py "${{ github.repository }}" --dir build/tiles
